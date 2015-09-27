@@ -1,0 +1,325 @@
+---
+title: "Predict Activity Quality from Monitors"
+author: "Guisb"
+date: "Monday, September 21, 2015"
+output: html_document
+---
+
+
+### Introduction
+
+The purpose of this project is to classify the quality of a weight lifting exercises and qualitative activity recognition. The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har (http://groupware.les.inf.puc-rio.br/har). 
+
+
+The goal of that experiment from which the data came from (PUC-RIO), was to assess whether could detect mistakes in weight-lifting exercises by using activity recognition techniques:
+
+"The goal is to classify subjects posture or movement in “sitting”, “sitting down”, 
+“standing”, “standing up”, or “walking” based on readings from 4 wearable accelerome-
+ters, mounted at waist (accelerometer #1), left thigh (accelerometer #2), right ankle (accelerometer #3) and right upper arm (around biceps – accelerometer #4)." **[2]**
+
+"We consider  5  activity  classes,  gathered  from  4  subjects wearing accelerometers mounted on their waist, left thigh, right arm, and right ankle. As basic input features  to  our classifier  we  use  12 attributes  derived from  a  time window  of 150ms." **[1]**
+
+
+Participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five diferent fashions:
+
+
+Class  |  Activity Recognition  
+-------|-------------------------------------------
+A      |  Exactly according to the specification    
+B      |  Throwing the elbows to the front 
+C      |  Lifting the dumbbell only halfway  
+D      |  Lowering the dumbbell only halfway 
+E      |  Throwing the hips to the front 
+
+Table:  **Table 1.  Activity Recognition**
+
+**Class A** corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes **[3]**.
+
+
+### Libraries Used ###
+
+In this project the following libraries was used:
+
+```{r results='hide', message=FALSE, warning=FALSE}
+library(downloader)
+library(ggplot2)
+library(caret)
+library(randomForest)
+library(Hmisc)
+library(doSNOW)
+```
+
+The project used the doSNOW library to set up for parallel processing with the following code, which will allow caret library to allot tasks to three cores CPU simultaneously.
+
+```{r}
+registerDoSNOW(makeCluster(3, type = "SOCK"))
+```
+
+
+###Data Sources
+
+### Get the data ###
+
+Initially, were downloaded the files to the working directory, so that I could make a visual analysis of the content. In this analysis it was possible to observe the existence of many missing values, both those represented by the value NA, as others, represented by mask "#DIV/0!".
+
+
+```{r echo=TRUE}
+download("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", "pml-training.csv", mode = "wb")
+download("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", "pml-testing.csv", mode = "wb")
+```
+
+
+### Data Preparation
+
+
+Once mapped these two conditions, both have been addressed in the creation of the data frame (training_pml):
+
+```{r}
+file_name  <- "pml-training.csv"
+training_pml <- read.table(file_name, header = TRUE, sep = ",", na.strings = c("NA", "#DIV/0!"))
+
+```
+
+###Handling NA Values
+
+The preliminary analysis resulted in the initiative of remove the columns containing missing data, from the file. There were 97 columns that contained NA values and other 67 columns, which contained the same number of 19216 NAs.
+
+```{r eval=FALSE}
+contents(training_pml)
+
+```
+
+```{r}
+na_values <- colSums(is.na(training_pml));
+```
+
+```{r}
+training_clean <- training_pml[,colSums(is.na(training_pml)) == 0]
+```
+
+
+After this initial step the data set remains with 60 variables, listed above. In addtion, each of the variables was verified as to its content (contents(training_clean)).
+
+```{r}
+names(training_clean)
+```
+
+
+```{r eval=FALSE, echo=FALSE}
+contents(training_clean)
+```
+
+How as related in original work (from PUC-RIO), the exercises were made by six male participants.
+
+"The exercises were performed by six male participants aged between 20-28 years, with  little weight lifting experience. We made sure that all participants could easily  simulate the mistakes in a safe and controlled manner by using a relatively light dumbbell (1.25kg)." **[3]**
+
+```{r}
+table(training_clean$user_name)
+```
+
+Below, a plot with the distribution.
+
+```{r echo=FALSE}
+ggplot(data=training_clean, aes(x = classe, fill = user_name)) +
+    geom_bar()+
+    scale_fill_manual(values = c("steelblue3", "thistle3", "#999999", "#E69F00", "#166BE2", "#23908C")) +
+    theme_minimal() + 
+    labs(x = "Classe", y = "Frequency") +
+    ggtitle("Distribution Users Exercises and Classes")
+
+```
+
+
+### Selecting predictors
+
+How as related in one document related to the original work, some features were selected.
+
+" ... (1) Sensor on the Belt: discretization of the module of acceleration vector, variance of pitch, and variance of roll; (2) Sensor on the left thigh: module of acceleration vector, discretization, and variance of pitch; (3) Sensor on the right ankle: variance of pitch, and variance of roll; (4) Sensor on the right arm: discretization of the module of acceleration vector; From all sensors: average acceleration and standard deviation of acceleration. " **[1]**
+
+
+Those features were distributed in data set along variables related to "belt", "arm", "dumbell" and "forearm". So, were selected and simultaneously discarded the seven initial columns, not related to sensors.
+
+
+```{r}
+dim(training_clean)
+
+columns_remains <- grep("*_belt*|*_arm*|*_dumbbell*|*_forearm*|*classe*", names(training_clean), ignore.case=TRUE)
+length(columns_remains)
+
+training_model = training_clean[, c(columns_remains)]
+
+```
+
+After this step, the seven initial columns were removed from the data set, remaining only those related to the sensors: belt, arm, dumbbell, and forearm. 
+
+Below, was plotted the relative frequency of the independent variable: classe. 
+
+
+```{r echo=FALSE}
+barplot(prop.table(table(training_model$classe)), col = "#3E80B6", xlab = "Classes", ylab = "Frequency", main = "Variable classe levels")
+```
+
+
+### Data Splitting
+
+The dataset **training_model** was partitioned into training and testing datasets, with 70% of the original data going to the training set and 30% to the testing. 
+
+```{r}
+set.seed(150921)
+
+train_indices = createDataPartition(training_model$classe, p = 0.7, list = F)
+training <- training_model[train_indices, ]
+testing <- training_model[-train_indices, ]
+```
+
+### Build a model on training data
+
+I made two models: 
+
+   * MOdel 1 - using Random Forest in Caret package, cross Validation as train control method and 5-fold.
+   * Model 2 - using the randomForest function (randomForest package).
+
+
+###Model 1###
+
+####Modeling with Cross Validation
+
+
+In this model was used the classification method in caret package. Also used classification tree algorithm, with random force and 5-fold validation.
+
+```{r}
+par_control <- trainControl(method="cv", number = 5, allowParallel = TRUE)
+```
+
+```{r}
+system.time({
+modelfit1 <- train(classe ~ ., data=training, method="rf", proximity = FALSE, trControl = par_control)
+})
+
+```
+
+```{r}
+modelfit1
+```
+
+
+
+After the execution, the predictor was evaluated on the validation data set:
+
+```{r}
+predict1  <-  predict(modelfit1, testing)
+confusionMatrix(testing$classe, predict1)
+```
+
+
+```{r}
+accuracy_kappa_modelfit1 <- postResample(predict1, testing$classe)
+accuracy_kappa_modelfit1
+```
+
+
+```{r}
+oose_rate_modelfit1  <- (1 - as.numeric(confusionMatrix(testing$classe, predict1)$overall[1]))
+oose_rate_modelfit1
+```
+
+The results showed a low out-of-sample error. The result for estimated accuracy (success rate) was very good. The kappa statistic, which adjusts accuracy by accounting for the possibility of a correct prediction by chance alone, returned a satisfatory level between the model's predictions and the true values (Very good agreement = 0.80 to 1.00).
+
+
+###Model 2###
+
+IIn this model (Model 2), was used the randomForest function (randomForest package) to fit the predictor to the training set. The randomForest package is perhaps the implementation most faithful to the specification of Breiman and Cutler. The randomForest library uses the out-of-bag error estimates instead of other cross-validation techniques. 
+
+```{r}
+set.seed(150921)
+```
+
+```{r}
+system.time({
+modelfit2 <- randomForest(classe ~ ., data = training, ntree = 500, nodesize = 7, importance = TRUE)
+})
+```
+
+Another point is related to computational cost. How as possible to see through computed time, randomForest function spent less computational resources and process time.
+
+```{r}
+modelfit2
+
+predict2  <- predict(modelfit2, newdata = testing)
+
+confusionMatrix(testing$classe, predict2)
+```
+
+The OOB (out-of-bag) estimate,  which is an unbiased estimate of the test set error, was low.
+
+```{r}
+accuracy_modelfit2 <- postResample(predict2, testing$classe)
+accuracy_modelfit2[1]
+
+```
+
+And the estimated accuracy of the model was adequate.
+
+
+####Variable Importance####
+
+The theory behind random forests provides a very natural way to rate the importance of variables.
+Below were plotted the variables importance as measured by the Random Forest algorithm. Were plotted the mean decrease in accuracy and the mean decrease in the Gini coeficient per variable. 
+
+```{r echo=FALSE}
+par(mfrow = c(1, 2), mar = c(4, 4, 2, 1))
+varImpPlot(modelfit2, main = " Average Importance - Model 2")
+```
+
+
+### Evaluate the model on the test data
+
+As both models have presented adequated accuracy, so due to the computational costs, I have chosen to use the second model (Model 2), for apply the machine learning algorithm built to each of the 20 test cases in the testing data set.
+
+First, the file pml-testing.csv, downloaded before, was prepared.
+
+```{r}
+file_name_test  <- "pml-testing.csv"
+testing_pml <- read.table(file_name_test, header = TRUE, sep = ",", na.strings = c("NA", "#DIV/0!"))
+testing_clean <- testing_pml[,colSums(is.na(testing_pml)) == 0]
+
+columns_remains_testing <- grep("*_belt*|*_arm*|*_dumbbell*|*_forearm*|*classe*", names(testing_clean), ignore.case=TRUE)
+
+testing_model = testing_clean[, c(columns_remains_testing)]
+```
+
+On the sequence, the model was applied to testing_model dataset.
+
+```{r}
+apply_testing_model <- predict(modelfit2, testing_model)
+
+apply_testing_model
+
+```
+
+Submit answers using the pml_write_files() function.
+
+```{r}
+pml_write_files = function(x){
+        n = length(x)
+        for(i in 1:n){
+                filename = paste0("problem_id_",i,".txt")
+                write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+        }
+}
+
+pml_write_files(apply_testing_model)
+
+```
+
+
+## References
+ 
+**[1]** Ugulino, W.; Cardador, D.; Vega, K.; Velloso, E.; Milidiu, R.; Fuks, H. Wearable Computing: Accelerometers' Data Classification of Body Postures and Movements . Proceedings of 21st Brazilian Symposium on Artificial Intelligence. Advances in Artificial Intelligence - SBIA 2012. In: Lecture Notes in Computer Science. , pp. 52-61. Curitiba, PR: Springer Berlin / Heidelberg, 2012.
+ISBN 978-3-642-34458-9. DOI: 10.1007/978-3-642-34459-6_6. 
+
+**[2]**  Ugulino,  W.; Velloso,  E.;  Milidiu,  R.; Fuks,  H. Human  Activity  Recognition  using  On-body Sensing.  Proceedings  of  III  Symposium  of  the  Brazilian  Institute  for  Web  Science  Research (WebScience), Volume 1. Rio de Janeiro: PUC-Rio, 2012. 
+
+**[3]** Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises .
+Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+ 
